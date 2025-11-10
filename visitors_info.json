@@ -1,0 +1,30 @@
+{
+  "visitors": [
+    {
+      "id": "person1",
+      "name": "홍길동",
+      "destination": "3층 회의실",
+      "image_filename": "person1.jpg"
+    },
+    {
+      "id": "person2",
+      "name": "김철수",
+      "destination": "2층 연구실",
+      "image_filename": "person2.jpg"
+    },
+    {
+      "id": "person_20251105_232735",
+      "name": "송재호",
+      "destination": "A구역",
+      "image_filename": "person_20251105_232735.jpg",
+      "registered_date": "20251105_232735"
+    },
+    {
+      "id": "person_20251105_232848",
+      "name": "김도연",
+      "destination": "B구역",
+      "image_filename": "person_20251105_232848.jpg",
+      "registered_date": "20251105_232848"
+    }
+  ]
+}
