@@ -105,3 +105,9 @@ python face_recognition_yolo.py
 - **`*_no_gui.py`**: GUI(OpenCV 창) 없이 백그라운드에서 실행되는 버전의 스크립트들. (터미널 로그만 출력)
 - **`visitors_info.json`**: 등록된 각 개인의 ID, 이름, 목적지, 이미지 파일명 등 메타데이터를 저장하는 JSON 파일.
 - **`requirements.txt`**: `torch`, `torchvision`, `ultralytics`, `facenet-pytorch`, `opencv-python` 등 프로젝트 실행에 필요한 모든 파이썬 패키지 목록.
+
+## 8. 라이선스 (License)
+
+이 프로젝트는 **AGPL-3.0 라이선스**를 따릅니다. `ultralytics` 라이브러리(AGPL-3.0)를 사용하므로, 이 프로젝트의 소스 코드 또한 동일한 라이선스에 따라 공개되어야 합니다. 자세한 내용은 `LICENSE` 파일을 참고하십시오.
+
+본 프로젝트는 교육 및 연구 목적으로 제작되었으며, 상업적 사용을 권장하지 않습니다.
