@@ -55,7 +55,7 @@
 
 1.  **프로젝트 클론**
     ```bash
-    git clone https://github.com/your-username/YOLO_InceptionResnetV1_Repo.git
+    git clone https://github.com/Soungtain4/YOLO_InceptionResnetV1_Repo.git
     cd YOLO_InceptionResnetV1_Repo
     ```
 
