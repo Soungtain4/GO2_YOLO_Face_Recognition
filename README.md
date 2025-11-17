@@ -13,6 +13,8 @@
 - **얼굴 인식**: 등록된 얼굴과 현재 탐지된 얼굴을 비교하여 신원을 확인합니다.
 - **방문자 정보 표시**: 인식된 방문자의 이름과 목적지를 화면에 오버레이하여 표시합니다.
 - **간편한 방문자 등록**: 간단한 CLI 스크립트를 통해 새로운 방문자의 얼굴과 정보를 쉽게 등록할 수 있습니다.
+- **GUI / No-GUI 모드 지원**: 디스플레이가 있는 환경과 없는 환경(서버, 임베디드) 모두 지원합니다.
+- **배치 처리**: No-GUI 모드에서 정해진 시간 동안 자동으로 얼굴을 인식하고 결과를 저장합니다.
 
 ## 3. 동작 원리
 
@@ -34,14 +36,19 @@
 
 ```
 .
-├── registered_faces/         # 등록된 얼굴 이미지 저장 폴더
+├── registered_faces/              # 등록된 얼굴 이미지 저장 폴더
 │   └── person_xxxxxxxx.jpg
-├── recognition_output/       # (미사용) 인식 결과 저장 폴더
-├── face_recognition_yolo.py  # 메인 얼굴 인식 프로그램 (GUI)
-├── register_face.py          # 얼굴 등록 프로그램 (CLI)
-├── visitors_info.json        # 등록된 방문자 정보 (메타데이터)
-├── requirements.txt          # 파이썬 의존성 파일
-└── README.md                 # 프로젝트 설명 파일
+├── recognition_output/            # 인식 결과 저장 폴더 (no_gui 버전에서 사용)
+│   ├── capture_xxxxxxxx.jpg      # 캡처된 이미지
+│   └── session_log_xxxxxxxx.json # 세션 로그
+├── face_recognition_yolo.py       # 메인 얼굴 인식 프로그램 (GUI 버전)
+├── face_recognition_yolo_no_gui.py # 얼굴 인식 프로그램 (No-GUI 버전)
+├── register_face.py               # 얼굴 등록 프로그램 (GUI 버전)
+├── register_face_no_gui.py        # 얼굴 등록 프로그램 (No-GUI 버전)
+├── visitors_info.json             # 등록된 방문자 정보 (메타데이터)
+├── requirements.txt               # 파이썬 의존성 파일
+├── LICENSE                        # AGPL-3.0 라이선스 파일
+└── README.md                      # 프로젝트 설명 파일
 ```
 
 ## 5. 설치 및 환경 설정
@@ -74,6 +81,8 @@
 
 얼굴 인식을 수행하기 전에 먼저 한 명 이상의 방문자를 등록해야 합니다.
 
+#### GUI 버전 (디스플레이가 있는 환경)
+
 1.  터미널에서 아래 명령어를 실행합니다.
     ```bash
     python register_face.py
@@ -85,9 +94,29 @@
 
 4.  `Y` 키를 눌러 저장하면 `registered_faces/` 폴더에 얼굴 이미지가 저장되고, `visitors_info.json` 파일에 관련 정보가 기록됩니다.
 
+#### No-GUI 버전 (서버, 임베디드 환경)
+
+디스플레이가 없는 환경(SSH 접속, Jetson Nano 등)에서 사용할 수 있습니다.
+
+1.  터미널에서 아래 명령어를 실행합니다.
+    ```bash
+    python register_face_no_gui.py
+    ```
+
+2.  메뉴에서 옵션을 선택합니다:
+    - **옵션 1**: 자동 캡처 모드 (3초 카운트다운 후 자동 촬영)
+    - **옵션 2**: 수동 캡처 모드 (Enter 키를 눌러 촬영)
+    - **옵션 3**: 등록된 얼굴 목록 조회
+
+3.  이름과 목적지를 입력한 후, 카메라 앞에 위치합니다.
+
+4.  자동 모드에서는 3초 카운트다운 후 자동으로 3장의 사진이 촬영되어 중간 사진이 저장됩니다.
+
 ### 6.2. 실시간 얼굴 인식
 
 방문자 등록을 완료한 후, 아래 명령어를 실행하여 실시간 인식을 시작합니다.
+
+#### GUI 버전
 
 ```bash
 python face_recognition_yolo.py
@@ -98,13 +127,47 @@ python face_recognition_yolo.py
 - 미등록 방문자는 "Unknown"으로 표시됩니다.
 - `q` 키를 누르면 프로그램이 종료됩니다.
 
+#### No-GUI 버전
+
+```bash
+python face_recognition_yolo_no_gui.py
+```
+
+- 메뉴에서 옵션을 선택합니다:
+  - **옵션 1**: 단일 이미지 처리
+  - **옵션 2**: 웹캠 배치 모드 (지정된 시간 동안 자동 인식)
+  - **옵션 3**: 종료
+
+- 웹캠 배치 모드를 선택하면:
+  - 인식 지속 시간(초)과 캡처 간격(초)을 설정합니다.
+  - 설정된 간격마다 자동으로 얼굴을 인식하고 결과를 `recognition_output/` 폴더에 저장합니다.
+  - 각 세션이 끝나면 JSON 형식의 로그 파일이 생성됩니다.
+
 ## 7. 주요 파일 설명
 
-- **`register_face.py`**: 웹캠을 통해 사용자의 이름, 목적지, 얼굴 사진을 등록하고 `visitors_info.json`과 `registered_faces/`에 저장하는 스크립트.
-- **`face_recognition_yolo.py`**: 메인 애플리케이션. YOLOv8로 얼굴을 탐지하고 InceptionResnetV1으로 특징을 추출하여 등록된 얼굴과 비교 후 결과를 화면에 출력.
-- **`*_no_gui.py`**: GUI(OpenCV 창) 없이 백그라운드에서 실행되는 버전의 스크립트들. (터미널 로그만 출력)
-- **`visitors_info.json`**: 등록된 각 개인의 ID, 이름, 목적지, 이미지 파일명 등 메타데이터를 저장하는 JSON 파일.
-- **`requirements.txt`**: `torch`, `torchvision`, `ultralytics`, `facenet-pytorch`, `opencv-python` 등 프로젝트 실행에 필요한 모든 파이썬 패키지 목록.
+### 7.1. 얼굴 등록 스크립트
+
+- **[register_face.py](register_face.py)**: 웹캠을 통해 사용자의 이름, 목적지, 얼굴 사진을 등록하는 GUI 버전. OpenCV 창을 통해 실시간으로 얼굴을 확인하며 SPACE 키로 촬영.
+
+- **[register_face_no_gui.py](register_face_no_gui.py)**: 디스플레이가 없는 환경을 위한 No-GUI 버전. 자동 캡처 모드(카운트다운)와 수동 캡처 모드를 지원하며, 등록된 얼굴 목록 조회 기능 포함.
+
+### 7.2. 얼굴 인식 스크립트
+
+- **[face_recognition_yolo.py](face_recognition_yolo.py)**: 실시간 얼굴 인식 메인 프로그램 (GUI 버전). YOLOv8로 얼굴을 탐지하고 InceptionResnetV1으로 특징을 추출하여 등록된 얼굴과 비교 후 결과를 화면에 실시간 표시.
+
+- **[face_recognition_yolo_no_gui.py](face_recognition_yolo_no_gui.py)**: No-GUI 버전 얼굴 인식 프로그램. 단일 이미지 처리 모드와 웹캠 배치 모드를 지원. 인식 결과를 이미지와 JSON 로그로 저장.
+
+### 7.3. 데이터 및 설정 파일
+
+- **`visitors_info.json`**: 등록된 각 방문자의 ID, 이름, 목적지, 이미지 파일명, 등록 날짜 등 메타데이터를 저장하는 JSON 파일.
+
+- **[requirements.txt](requirements.txt)**: `torch`, `torchvision`, `ultralytics`, `facenet-pytorch`, `opencv-python` 등 프로젝트 실행에 필요한 모든 파이썬 패키지 목록.
+
+### 7.4. 출력 폴더
+
+- **`registered_faces/`**: 등록된 얼굴 이미지가 저장되는 폴더. 각 이미지는 `person_YYYYMMDD_HHMMSS.jpg` 형식으로 저장.
+
+- **`recognition_output/`**: No-GUI 모드에서 인식 결과가 저장되는 폴더. 캡처된 이미지와 세션 로그(JSON)가 저장됨.
 
 ## 8. 라이선스 (License)
 
