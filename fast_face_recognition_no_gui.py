@@ -52,6 +52,57 @@ class FastFaceRecognitionSystem:
         # Load registered faces
         self.known_embeddings = {}
         self.known_names = {}
+        self.visitors_info = self._load_visitors_info()
+        self._precompute_embeddings()
+        
+        print(f"System initialized. {len(self.known_embeddings)} faces registered.")
+
+    def _download_mobilefacenet(self):
+        """
+        Download MobileFaceNet model from Hugging Face (buffalo_s.zip).
+        Using 'vladmandic/insightface-faceanalysis' which mirrors the official models.
+        """
+        print("MobileFaceNet 모델 다운로드 중 (Hugging Face)...")
+        print("저장소: vladmandic/insightface-faceanalysis")
+        
+        repo_id = "vladmandic/insightface-faceanalysis"
+        filename = "models/buffalo_s.zip"
+        
+        import zipfile
+        import shutil
+        
+        try:
+            # 1. Download zip using hf_hub_download
+            print(f"다운로드 시작: {repo_id}/{filename}")
+            zip_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            print(f"다운로드 완료: {zip_path}")
+            
+            # 2. Extract specific file (w600k_mbf.onnx is MobileFaceNet)
+            print("압축 해제 및 모델 추출 중...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # The file inside might be in a subfolder or root
+                # We look for 'w600k_mbf.onnx'
+                found = False
+                for file in zip_ref.namelist():
+                    if file.endswith("w600k_mbf.onnx"):
+                        with zip_ref.open(file) as source, open(self.recog_model_path, "wb") as target:
+                            shutil.copyfileobj(source, target)
+                        found = True
+                        break
+                
+                if not found:
+                    raise Exception("zip 파일 내에 모델(w600k_mbf.onnx)이 없습니다.")
+            
+            print(f"설치 완료! 모델 저장됨: {self.recog_model_path}")
+                
+        except Exception as e:
+            print(f"다운로드 오류 발생: {e}")
+            print("인터넷 연결을 확인하거나, 수동으로 'mobilefacenet.onnx' 파일을 구해서 이 폴더에 넣어주세요.")
+            raise
+
+    def _load_visitors_info(self):
+        if not os.path.exists(self.visitors_json):
+            return {}
         with open(self.visitors_json, 'r', encoding='utf-8') as f:
             data = json.load(f)
         visitors_map = {}
