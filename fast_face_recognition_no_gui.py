@@ -52,28 +52,6 @@ class FastFaceRecognitionSystem:
         # Load registered faces
         self.known_embeddings = {}
         self.known_names = {}
-        self.visitors_info = self._load_visitors_info()
-        self._precompute_embeddings()
-        
-        print(f"System initialized. {len(self.known_embeddings)} faces registered.")
-
-    def _download_mobilefacenet(self):
-        """Download MobileFaceNet ONNX model"""
-        print("Downloading MobileFaceNet ONNX model...")
-        try:
-            # Use direct download from GitHub instead of Hugging Face
-            url = "https://github.com/foamliu/MobileFaceNet-ONNX/raw/master/mobilefacenet.onnx"
-            import urllib.request
-            urllib.request.urlretrieve(url, self.recog_model_path)
-            print(f"Downloaded to {self.recog_model_path}")
-        except Exception as e:
-            print(f"Error downloading model: {e}")
-            print("Please manually download 'mobilefacenet.onnx' and place it in this folder.")
-            raise
-
-    def _load_visitors_info(self):
-        if not os.path.exists(self.visitors_json):
-            return {}
         with open(self.visitors_json, 'r', encoding='utf-8') as f:
             data = json.load(f)
         visitors_map = {}
