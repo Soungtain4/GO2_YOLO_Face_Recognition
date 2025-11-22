@@ -61,10 +61,10 @@ class FastFaceRecognitionSystem:
         """Download MobileFaceNet ONNX model"""
         print("Downloading MobileFaceNet ONNX model...")
         try:
-            # Using a reliable HF repo for MobileFaceNet ONNX
-            path = hf_hub_download(repo_id="Xenova/mobilefacenet", filename="mobilefacenet.onnx")
-            import shutil
-            shutil.copy(path, self.recog_model_path)
+            # Use direct download from GitHub instead of Hugging Face
+            url = "https://github.com/foamliu/MobileFaceNet-ONNX/raw/master/mobilefacenet.onnx"
+            import urllib.request
+            urllib.request.urlretrieve(url, self.recog_model_path)
             print(f"Downloaded to {self.recog_model_path}")
         except Exception as e:
             print(f"Error downloading model: {e}")
