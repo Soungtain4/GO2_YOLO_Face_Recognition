@@ -133,6 +133,90 @@ class NPUYoloDetector:
             
         return np.array(boxes), np.array(scores)
 
+    @staticmethod
+    def _compute_iou(box, boxes):
+        """Compute IoU between one box and multiple boxes"""
+        x1 = np.maximum(box[0], boxes[:, 0])
+        y1 = np.maximum(box[1], boxes[:, 1])
+        x2 = np.minimum(box[2], boxes[:, 2])
+        y2 = np.minimum(box[3], boxes[:, 3])
+
+        intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+
+        area1 = (box[2] - box[0]) * (box[3] - box[1])
+        area2 = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
+        union = area1 + area2 - intersection
+
+        return intersection / (union + 1e-6)
+
+    def _nms(self, boxes, scores):
+        """
+        Apply Non-Maximum Suppression
+
+        Args:
+            boxes: (N, 4) array [x1, y1, x2, y2]
+            scores: (N,) array of confidence scores
+
+        Returns:
+            Filtered boxes and scores
+        """
+        if len(boxes) == 0:
+            return boxes, scores
+
+        # Sort by score
+        indices = np.argsort(scores)[::-1]
+
+        keep = []
+        while len(indices) > 0:
+            # Keep highest scoring box
+            current = indices[0]
+            keep.append(current)
+
+            if len(indices) == 1:
+                break
+
+            # Calculate IoU with remaining boxes
+            current_box = boxes[current]
+            other_boxes = boxes[indices[1:]]
+
+            ious = self._compute_iou(current_box, other_boxes)
+
+            # Keep boxes with IoU below threshold
+            indices = indices[1:][ious < self.iou_thres]
+
+        return boxes[keep], scores[keep]
+
+    def _scale_boxes_to_original(self, boxes, metadata):
+        """
+        Scale boxes back to original image coordinates
+
+        Args:
+            boxes: (N, 4) array [x1, y1, x2, y2] in model input coordinates
+            metadata: Dict with 'scale', 'pad_x', 'pad_y', 'orig_shape'
+
+        Returns:
+            Scaled boxes in original image coordinates
+        """
+        if len(boxes) == 0:
+            return boxes
+
+        scale = metadata['scale']
+        pad_x = metadata['pad_x']
+        pad_y = metadata['pad_y']
+        orig_h, orig_w = metadata['orig_shape']
+
+        # Remove padding and scale
+        boxes_scaled = boxes.copy()
+        boxes_scaled[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
+        boxes_scaled[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
+
+        # Clip to image boundaries
+        boxes_scaled[:, [0, 2]] = np.clip(boxes_scaled[:, [0, 2]], 0, orig_w)
+        boxes_scaled[:, [1, 3]] = np.clip(boxes_scaled[:, [1, 3]], 0, orig_h)
+
+        return boxes_scaled
+
     def postprocess(self, outputs, metadata):
         # Outputs: 6 tensors
         # 0: (20, 20, 1)  -> Class (Stride 32)
@@ -220,7 +304,9 @@ class NPUFaceRecognizer:
     def get_embedding(self, face_img):
         input_tensor = self.preprocess(face_img)
         outputs = self.model.infer([input_tensor])
-        # Output should be (1, 512)
+        
+        # Output shape from debug: (1, 1, 512)
+        # We need a flat 512 vector
         embedding = outputs[0].flatten()
         return embedding
 
@@ -396,6 +482,35 @@ class YOLOFaceRecognitionSystemNPU:
                     last_capture_time = current_time
                 time.sleep(0.01)
                 
+                
+        except KeyboardInterrupt:
+            print("\nInterrupted")
+        finally:
+            cap.release()
+
+    def run_burst_capture(self, camera_index=0, num_frames=10):
+        cap = cv2.VideoCapture(camera_index)
+        if not cap.isOpened():
+            print("Error: Cannot open camera")
+            return
+
+        print("\n" + "="*60)
+        print(f"Burst Capture Started (Saving {num_frames} frames)")
+        print("="*60)
+        
+        count = 0
+        try:
+            while count < num_frames:
+                ret, frame = cap.read()
+                if not ret: break
+                
+                count += 1
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                output_path = Path(self.output_dir) / f"burst_{timestamp}.jpg"
+                cv2.imwrite(str(output_path), frame)
+                print(f"[{count}/{num_frames}] Saved: {output_path}")
+                time.sleep(0.1)
+                
         except KeyboardInterrupt:
             print("\nInterrupted")
         finally:
@@ -409,15 +524,40 @@ def main():
     try:
         system = YOLOFaceRecognitionSystemNPU()
         
-        camera_index = find_available_camera()
-        if camera_index is None:
-            print("Error: No cameras found!")
-            return
+        while True:
+            print("\nOptions:")
+            print("1. Burst Capture (Save only)")
+            print("2. Webcam Batch (Save + Recognize)")
+            print("3. Exit")
             
-        duration = input("Enter duration in seconds (default 10): ").strip()
-        duration = int(duration) if duration else 10
-        
-        system.run_webcam_batch(camera_index=camera_index, duration_seconds=duration)
+            choice = input("\nSelect option (1-3): ").strip()
+            
+            if choice == '1':
+                camera_index = find_available_camera()
+                if camera_index is None:
+                    print("Error: No cameras found!")
+                    continue
+                system.run_burst_capture(camera_index=camera_index, num_frames=10)
+                
+            elif choice == '2':
+                camera_index = find_available_camera()
+                if camera_index is None:
+                    print("Error: No cameras found!")
+                    continue
+                    
+                duration = input("Enter duration in seconds (default 10): ").strip()
+                duration = int(duration) if duration else 10
+                
+                interval = input("Enter capture interval in seconds (default 2): ").strip()
+                interval = float(interval) if interval else 2.0
+                
+                system.run_webcam_batch(camera_index=camera_index, duration_seconds=duration, capture_interval=interval)
+                
+            elif choice == '3':
+                print("Exiting...")
+                break
+            else:
+                print("Invalid option")
         
     except Exception as e:
         print(f"Error: {e}")
