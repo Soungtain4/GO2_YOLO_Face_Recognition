@@ -90,23 +90,35 @@ class NPUYoloDetector:
         exp_x = np.exp(x - np.max(x, axis=-1, keepdims=True))
         return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
 
-    def _decode_boxes_dfl(self, output, grid, stride):
-        num_anchors = output.shape[0]
+    def _decode_boxes_dfl(self, box_output, class_output, grid, stride):
+        # box_output: (H, W, 64) -> DFL distribution
+        # class_output: (H, W, 1) -> Class score
+        
+        # Flatten if needed
+        if len(box_output.shape) == 3:
+            box_output = box_output.reshape(-1, 64)
+        if len(class_output.shape) == 3:
+            class_output = class_output.reshape(-1, 1)
+            
+        num_anchors = box_output.shape[0]
         boxes = []
         scores = []
         inverse_conf = -np.log(1 / self.conf_thres - 1)
 
         for i in range(num_anchors):
-            class_score = output[i, 64]
+            # Class score is now in a separate tensor (index 0)
+            class_score = class_output[i, 0]
+            
             if class_score < inverse_conf:
                 continue
             conf = 1 / (1 + np.exp(-class_score))
             
+            # Decode box (DFL)
             box = []
             for j in range(4):
                 start_idx = j * 16
                 end_idx = start_idx + 16
-                dist = output[i, start_idx:end_idx]
+                dist = box_output[i, start_idx:end_idx]
                 prob = self._softmax(dist)
                 value = np.sum(prob * np.arange(16))
                 box.append(value)
@@ -121,50 +133,50 @@ class NPUYoloDetector:
             
         return np.array(boxes), np.array(scores)
 
-    def _nms(self, boxes, scores):
-        if len(boxes) == 0: return boxes, scores
-        indices = np.argsort(scores)[::-1]
-        keep = []
-        while len(indices) > 0:
-            current = indices[0]
-            keep.append(current)
-            if len(indices) == 1: break
-            current_box = boxes[current]
-            other_boxes = boxes[indices[1:]]
-            
-            x1 = np.maximum(current_box[0], other_boxes[:, 0])
-            y1 = np.maximum(current_box[1], other_boxes[:, 1])
-            x2 = np.minimum(current_box[2], other_boxes[:, 2])
-            y2 = np.minimum(current_box[3], other_boxes[:, 3])
-            intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
-            area1 = (current_box[2] - current_box[0]) * (current_box[3] - current_box[1])
-            area2 = (other_boxes[:, 2] - other_boxes[:, 0]) * (other_boxes[:, 3] - other_boxes[:, 1])
-            union = area1 + area2 - intersection
-            ious = intersection / (union + 1e-6)
-            
-            indices = indices[1:][ious < self.iou_thres]
-        return boxes[keep], scores[keep]
-
-    def _scale_boxes_to_original(self, boxes, metadata):
-        if len(boxes) == 0: return boxes
-        scale = metadata['scale']
-        pad_x = metadata['pad_x']
-        pad_y = metadata['pad_y']
-        orig_h, orig_w = metadata['orig_shape']
-        boxes_scaled = boxes.copy()
-        boxes_scaled[:, [0, 2]] = (boxes[:, [0, 2]] - pad_x) / scale
-        boxes_scaled[:, [1, 3]] = (boxes[:, [1, 3]] - pad_y) / scale
-        boxes_scaled[:, [0, 2]] = np.clip(boxes_scaled[:, [0, 2]], 0, orig_w)
-        boxes_scaled[:, [1, 3]] = np.clip(boxes_scaled[:, [1, 3]], 0, orig_h)
-        return boxes_scaled
-
     def postprocess(self, outputs, metadata):
+        # Outputs: 6 tensors
+        # 0: (20, 20, 1)  -> Class (Stride 32)
+        # 1: (20, 20, 64) -> Box (Stride 32)
+        # 2: (40, 40, 1)  -> Class (Stride 16)
+        # 3: (40, 40, 64) -> Box (Stride 16)
+        # 4: (80, 80, 1)  -> Class (Stride 8)
+        # 5: (80, 80, 64) -> Box (Stride 8)
+        
+        # Note: The order might be reversed (Stride 8 first) or mixed.
+        # Based on shapes from debug log:
+        # Out 0: (20, 20, 1) -> Stride 32 Class
+        # Out 1: (20, 20, 64) -> Stride 32 Box
+        # Out 2: (40, 40, 1) -> Stride 16 Class
+        # Out 3: (40, 40, 64) -> Stride 16 Box
+        # Out 4: (80, 80, 1) -> Stride 8 Class
+        # Out 5: (80, 80, 64) -> Stride 8 Box
+        
+        # self.strides = [8, 16, 32] -> We need to match them.
+        # So we should process in reverse order of outputs or map them correctly.
+        
+        # Mapping:
+        # Stride 8 (80x80): Index 4 (Class), Index 5 (Box)
+        # Stride 16 (40x40): Index 2 (Class), Index 3 (Box)
+        # Stride 32 (20x20): Index 0 (Class), Index 1 (Box)
+        
+        # Let's organize them
+        layer_indices = [
+            (4, 5), # Stride 8
+            (2, 3), # Stride 16
+            (0, 1)  # Stride 32
+        ]
+        
         all_boxes = []
         all_scores = []
-        for i, (output, grid, stride) in enumerate(zip(outputs, self.grids, self.strides)):
-            if len(output.shape) == 3:
-                output = output.reshape(-1, output.shape[-1])
-            boxes, scores = self._decode_boxes_dfl(output, grid, stride)
+        
+        for i, (class_idx, box_idx) in enumerate(layer_indices):
+            grid = self.grids[i]
+            stride = self.strides[i]
+            
+            class_out = outputs[class_idx]
+            box_out = outputs[box_idx]
+            
+            boxes, scores = self._decode_boxes_dfl(box_out, class_out, grid, stride)
             if len(boxes) > 0:
                 all_boxes.append(boxes)
                 all_scores.append(scores)
@@ -228,25 +240,23 @@ class YOLOFaceRecognitionSystemNPU:
         Path(self.output_dir).mkdir(exist_ok=True)
 
         # Initialize NPU models
-        # User provided 'yolov8n-face.mxq' and 'inception_resnet_v1_vggface2.mxq'
-        # I will use the paths provided by the user.
-        # Note: User said "go2_demo_mobilint 에 위치시켜놨어" which is the parent dir of repo?
-        # Or current dir? The list_dir showed them in "c:\Users\user\Desktop\Code\go2_demo_mobilint"
-        # The script is in "c:\Users\user\Desktop\Code\go2_demo_mobilint\YOLO_InceptionResnetV1_Repo"
-        # So paths should be "../yolov8n-face.mxq" and "../inception_resnet_v1_vggface2.mxq"
+        # User confirmed models are in the same directory as the script
         
-        yolo_path = "../yolov8n-face.mxq"
-        facenet_path = "../inception_resnet_v1_vggface2.mxq"
+        yolo_path = "yolov8n-face.mxq"
+        facenet_path = "inception_resnet_v1_vggface2.mxq"
         
-        # Fallback to absolute if needed, but relative is better for portability
+        # Check if files exist, if not try parent directory (fallback)
         if not os.path.exists(yolo_path):
-             # Try current dir just in case
-             if os.path.exists("yolov8n-face.mxq"): yolo_path = "yolov8n-face.mxq"
+             if os.path.exists("../" + yolo_path): 
+                 yolo_path = "../" + yolo_path
+                 print(f"Found YOLO model in parent directory: {yolo_path}")
         
         if not os.path.exists(facenet_path):
-             if os.path.exists("inception_resnet_v1_vggface2.mxq"): facenet_path = "inception_resnet_v1_vggface2.mxq"
+             if os.path.exists("../" + facenet_path): 
+                 facenet_path = "../" + facenet_path
+                 print(f"Found FaceNet model in parent directory: {facenet_path}")
 
-        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 640)) # User's custom model likely 640x640
+        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 640))
         self.face_recognizer = NPUFaceRecognizer(model_path=facenet_path)
 
         self.visitors_info = self._load_visitors_info()

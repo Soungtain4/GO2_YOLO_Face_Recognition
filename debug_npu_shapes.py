@@ -11,7 +11,8 @@ except ImportError:
 
 def main():
     # Load custom model
-    model_path = "yolov8n-face.mxq"
+    # model_path = "yolov8n-face.mxq"
+    model_path = "inception_resnet_v1_vggface2.mxq"
     
     print(f"Loading model: {model_path}")
     if not os.path.exists(model_path):
@@ -46,9 +47,8 @@ def main():
 
     # Test shapes and types
     resolutions = [
-        ("640x640", (640, 640)),
-        ("640x512", (640, 512)),
-        ("512x640", (512, 640))
+        ("160x160", (160, 160)),
+        ("640x640", (640, 640))
     ]
     
     for res_name, (h, w) in resolutions:
