@@ -312,6 +312,11 @@ class NPUYoloDetector:
         all_scores = []
 
         for i, (output, grid, stride) in enumerate(zip(outputs, self.grids, self.strides)):
+            # Output shape from NPU is (GridH, GridW, 80)
+            # We need to flatten it to (GridH * GridW, 80) to match the grid
+            if len(output.shape) == 3:
+                output = output.reshape(-1, output.shape[-1])
+            
             boxes, scores = self._decode_boxes_dfl(output, grid, stride)
             if len(boxes) > 0:
                 all_boxes.append(boxes)
