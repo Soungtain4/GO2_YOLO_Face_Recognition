@@ -1,9 +1,10 @@
 """
-YOLO + InceptionResnetV1 Face Recognition System (Full NPU Version)
+YOLO + InceptionResnetV1 Face Recognition System (NPU Version + ROS 2 Verify Mode)
 - Auto-detects first available camera
 - Face Detection: YOLOv8-Face (NPU: yolov8n-face.mxq)
 - Face Recognition: InceptionResnetV1 (NPU: inception_resnet_v1_vggface2.mxq)
-- Output: Save annotated images + JSON logs
+- ROS 2: Publishes recognized destination to /destination_command
+- Logic: "Human-in-the-loop Verification" (Ask y/n before publish)
 """
 
 import cv2
@@ -14,6 +15,11 @@ import time
 from pathlib import Path
 from datetime import datetime
 from PIL import Image
+
+# ROS 2 Imports
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
 
 try:
     import maccel
@@ -37,11 +43,23 @@ def find_available_camera(max_checks=10):
             cap.release()
     return None
 
+class FaceRecognitionNode(Node):
+    def __init__(self):
+        super().__init__('face_recognition_node')
+        self.publisher_ = self.create_publisher(String, '/destination_command', 10)
+        self.get_logger().info('Face Recognition Node Started. Publisher created on /destination_command')
+
+    def publish_destination(self, destination):
+        msg = String()
+        msg.data = destination
+        self.publisher_.publish(msg)
+        self.get_logger().info(f'Published destination command: "{destination}"')
+
 class NPUYoloDetector:
     """
     YOLO Face Detector using NPU (maccel)
     """
-    def __init__(self, model_path, input_size=(512, 640), conf_thres=0.45, iou_thres=0.5):
+    def __init__(self, model_path, input_size=(640, 512), conf_thres=0.45, iou_thres=0.5):
         print(f"Loading YOLO model from NPU: {model_path}")
         self.acc = maccel.Accelerator()
         self.model = maccel.Model(model_path)
@@ -93,21 +111,21 @@ class NPUYoloDetector:
     def _decode_boxes_dfl(self, box_output, class_output, grid, stride):
         # box_output: (H, W, 64) -> DFL distribution
         # class_output: (H, W, 1) -> Class score
-        
+
         # Flatten if needed
         if len(box_output.shape) == 3:
             box_output = box_output.reshape(-1, 64)
         if len(class_output.shape) == 3:
             class_output = class_output.reshape(-1, 1)
-            
+
         num_anchors = box_output.shape[0]
         boxes = []
         scores = []
-        
+
         # Check if output is already sigmoid-activated (probabilities)
         # If all values are between 0 and 1, assume probabilities.
         is_probability = np.all((class_output >= 0) & (class_output <= 1))
-        
+
         if is_probability:
             # Values are already probabilities
             # Filter directly
@@ -121,12 +139,11 @@ class NPUYoloDetector:
 
         for i in indices:
             class_score = class_output[i, 0]
-            
             if is_probability:
                 conf = class_score
             else:
                 conf = 1 / (1 + np.exp(-class_score))
-            
+
             # Decode box (DFL)
             box = []
             for j in range(4):
@@ -136,7 +153,7 @@ class NPUYoloDetector:
                 prob = self._softmax(dist)
                 value = np.sum(prob * np.arange(16))
                 box.append(value)
-            
+
             grid_x, grid_y = grid[i]
             x1 = (grid_x - box[0] + 0.5) * stride
             y1 = (grid_y - box[1] + 0.5) * stride
@@ -144,7 +161,7 @@ class NPUYoloDetector:
             y2 = (grid_y + box[3] + 0.5) * stride
             boxes.append([x1, y1, x2, y2])
             scores.append(conf)
-            
+
         return np.array(boxes), np.array(scores)
 
     @staticmethod
@@ -239,7 +256,7 @@ class NPUYoloDetector:
         # 3: (40, 40, 64) -> Box (Stride 16)
         # 4: (80, 80, 1)  -> Class (Stride 8)
         # 5: (80, 80, 64) -> Box (Stride 8)
-        
+
         # Note: The order might be reversed (Stride 8 first) or mixed.
         # Based on shapes from debug log:
         # Out 0: (20, 20, 1) -> Stride 32 Class
@@ -248,43 +265,43 @@ class NPUYoloDetector:
         # Out 3: (40, 40, 64) -> Stride 16 Box
         # Out 4: (80, 80, 1) -> Stride 8 Class
         # Out 5: (80, 80, 64) -> Stride 8 Box
-        
+
         # self.strides = [8, 16, 32] -> We need to match them.
         # So we should process in reverse order of outputs or map them correctly.
-        
+
         # Mapping:
         # Stride 8 (80x80): Index 4 (Class), Index 5 (Box)
         # Stride 16 (40x40): Index 2 (Class), Index 3 (Box)
         # Stride 32 (20x20): Index 0 (Class), Index 1 (Box)
-        
+
         # Let's organize them
         layer_indices = [
             (4, 5), # Stride 8
             (2, 3), # Stride 16
             (0, 1)  # Stride 32
         ]
-        
+
         all_boxes = []
         all_scores = []
-        
+
         for i, (class_idx, box_idx) in enumerate(layer_indices):
             grid = self.grids[i]
             stride = self.strides[i]
-            
+
             class_out = outputs[class_idx]
             box_out = outputs[box_idx]
-            
+
             boxes, scores = self._decode_boxes_dfl(box_out, class_out, grid, stride)
             if len(boxes) > 0:
                 all_boxes.append(boxes)
                 all_scores.append(scores)
-        
+
         if len(all_boxes) > 0:
             boxes = np.concatenate(all_boxes, axis=0)
             scores = np.concatenate(all_scores, axis=0)
         else:
             return np.array([]), np.array([])
-            
+
         boxes, scores = self._nms(boxes, scores)
         boxes = self._scale_boxes_to_original(boxes, metadata)
         return boxes, scores
@@ -318,27 +335,29 @@ class NPUFaceRecognizer:
     def get_embedding(self, face_img):
         input_tensor = self.preprocess(face_img)
         outputs = self.model.infer([input_tensor])
-        
+
         # Output shape from debug: (1, 1, 512)
         # We need a flat 512 vector
         embedding = outputs[0].flatten()
-        
+
         # L2 Normalize
         norm = np.linalg.norm(embedding)
         if norm > 0:
             embedding = embedding / norm
-            
+
         return embedding
 
-class YOLOFaceRecognitionSystemNPU:
+class YOLOFaceRecognitionSystemROS2NPU:
     def __init__(self,
+                 node,
                  registered_faces_dir="registered_faces",
                  visitors_json="visitors_info.json",
                  output_dir="recognition_output",
-                 yolo_model_path="../regulus-npu-demo/face-detection-yolov8n/face_yolov8n_640_512.mxq", # Using existing one for safety or custom? User said custom.
+                 yolo_model_path="../regulus-npu-demo/face-detection-yolov8n/face_yolov8n_640_512.mxq",
                  facenet_model_path="inception_resnet_v1_vggface2.mxq",
                  threshold=0.6):
-        
+
+        self.node = node
         self.registered_faces_dir = registered_faces_dir
         self.visitors_json = visitors_json
         self.output_dir = output_dir
@@ -346,30 +365,27 @@ class YOLOFaceRecognitionSystemNPU:
         Path(self.output_dir).mkdir(exist_ok=True)
 
         # Initialize NPU models
-        # User confirmed models are in the same directory as the script
-        
         yolo_path = "yolov8n-face.mxq"
         facenet_path = "inception_resnet_v1_vggface2.mxq"
-        
-        # Check if files exist, if not try parent directory (fallback)
+
         if not os.path.exists(yolo_path):
-             if os.path.exists("../" + yolo_path): 
+             if os.path.exists("../" + yolo_path):
                  yolo_path = "../" + yolo_path
                  print(f"Found YOLO model in parent directory: {yolo_path}")
-        
+
         if not os.path.exists(facenet_path):
-             if os.path.exists("../" + facenet_path): 
+             if os.path.exists("../" + facenet_path):
                  facenet_path = "../" + facenet_path
                  print(f"Found FaceNet model in parent directory: {facenet_path}")
 
-        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 640))
+        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 512))
         self.face_recognizer = NPUFaceRecognizer(model_path=facenet_path)
 
         self.visitors_info = self._load_visitors_info()
         self.known_embeddings = {}
         self.known_names = {}
         self._precompute_embeddings()
-        
+
         print(f"System initialized. {len(self.known_embeddings)} faces registered.")
 
     def _load_visitors_info(self):
@@ -389,21 +405,21 @@ class YOLOFaceRecognitionSystemNPU:
             return
         face_files = list(Path(self.registered_faces_dir).glob("*.jpg")) + list(Path(self.registered_faces_dir).glob("*.png"))
         print(f"Computing embeddings for {len(face_files)} registered faces...")
-        
+
         for face_file in face_files:
             try:
                 img = cv2.imread(str(face_file))
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 boxes, scores = self.yolo_detector.detect(img_rgb)
-                
+
                 if len(boxes) > 0:
                     x1, y1, x2, y2 = map(int, boxes[0])
                     face = img_rgb[y1:y2, x1:x2]
                     embedding = self.face_recognizer.get_embedding(face)
-                    
+
                     filename = face_file.name
                     self.known_embeddings[filename] = embedding
-                    
+
                     if filename in self.visitors_info:
                         visitor = self.visitors_info[filename]
                         self.known_names[filename] = {
@@ -426,13 +442,13 @@ class YOLOFaceRecognitionSystemNPU:
         embedding = self.face_recognizer.get_embedding(face_img)
         min_distance = float('inf')
         best_match = None
-        
+
         for filename, known_embedding in self.known_embeddings.items():
             distance = np.linalg.norm(embedding - known_embedding)
             if distance < min_distance:
                 min_distance = distance
                 best_match = filename
-                
+
         if min_distance < self.threshold:
             result = self.known_names[best_match].copy()
             result['distance'] = float(min_distance)
@@ -443,161 +459,108 @@ class YOLOFaceRecognitionSystemNPU:
                 print(f"  [Debug] Best match: {best_match} (Dist: {min_distance:.4f} > Threshold: {self.threshold})")
             else:
                 print(f"  [Debug] No match found (Dist: {min_distance})")
-                
+
         return None
 
-    def run_webcam_batch(self, camera_index=0, duration_seconds=10, capture_interval=2):
+    def run_ros2_recognition(self, camera_index=0):
+        """
+        Main loop for ROS 2 Verify Mode (NPU)
+        """
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
             print("Error: Cannot open camera")
             return
 
         print("\n" + "="*60)
-        print("YOLO Face Recognition Started (Full NPU Version)")
+        print("ROS 2 Face Recognition Started (Verify Mode - NPU)")
         print("="*60)
-        
-        start_time = time.time()
-        last_capture_time = 0
-        frame_count = 0
-        
+        print(" - Detects faces continuously")
+        print(" - Pauses on detection and asks for confirmation (y/n)")
+        print("="*60 + "\n")
+
         try:
-            while True:
-                current_time = time.time()
-                elapsed_time = current_time - start_time
-                if elapsed_time >= duration_seconds:
-                    print(f"\nSession completed ({duration_seconds}s)")
+            while rclpy.ok():
+                ret, frame = cap.read()
+                if not ret:
+                    print("Error reading frame")
                     break
-                
-                ret, frame = cap.read()
-                if not ret: break
-                
-                frame_count += 1
-                if current_time - last_capture_time >= capture_interval:
-                    print(f"\n[{elapsed_time:.1f}s] Capturing frame {frame_count}...")
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    boxes, scores = self.yolo_detector.detect(frame_rgb)
-                    
-                    if len(boxes) > 0:
-                        print(f"Detected {len(boxes)} face(s)")
-                        for idx, (box, score) in enumerate(zip(boxes, scores)):
-                            x1, y1, x2, y2 = map(int, box)
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            
-                            try:
-                                face = frame_rgb[y1:y2, x1:x2]
-                                
-                                # Check if face image is valid (not empty)
-                                if face.size == 0:
-                                    print(f"  Face {idx + 1}: Invalid face crop ({x1}, {y1}, {x2}, {y2})")
-                                    continue
-                                    
-                                result = self.recognize_face(face)
-                                if result:
-                                    name = result['name']
-                                    destination = result.get('destination', 'Unknown')
-                                    conf = result['confidence']
-                                    
-                                    label = f"{name} ({conf:.1f}%)"
-                                    cv2.putText(frame, label, (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                                    cv2.putText(frame, f"Dest: {destination}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                                    print(f"  Face {idx + 1}: {name} -> {destination} ({conf:.1f}%)")
+
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                boxes, scores = self.yolo_detector.detect(frame_rgb)
+
+                if len(boxes) > 0:
+                    for idx, (box, score) in enumerate(zip(boxes, scores)):
+                        x1, y1, x2, y2 = map(int, box)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                        try:
+                            face = frame_rgb[y1:y2, x1:x2]
+                            if face.size == 0: continue
+
+                            result = self.recognize_face(face)
+                            if result:
+                                name = result['name']
+                                destination = result.get('destination', 'Unknown')
+                                conf = result['confidence']
+
+                                label = f"{name} ({conf:.1f}%)"
+                                cv2.putText(frame, label, (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                                cv2.putText(frame, f"Dest: {destination}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                                # Logic: Pause and Ask
+                                print(f"\n" + "="*40)
+                                print(f"DETECTED: {name}")
+                                print(f"Destination: {destination}")
+                                print(f"Confidence: {conf:.1f}%")
+                                print("="*40)
+
+                                user_input = input(f">> Send command '{destination}' to robot? (y/n): ").strip().lower()
+
+                                if user_input == 'y':
+                                    print(f" -> Publishing command: {destination}")
+                                    self.node.publish_destination(destination)
+                                    print(" -> Command sent! Exiting...")
+                                    time.sleep(1.0)
+                                    return # Exit function
                                 else:
-                                    cv2.putText(frame, "Unknown", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                    print(f"  Face {idx + 1}: Unknown")
-                            except Exception as e:
-                                print(f"Error: {e}")
-                                
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        output_path = Path(self.output_dir) / f"capture_npu_{timestamp}.jpg"
-                        cv2.imwrite(str(output_path), frame)
-                        print(f"Saved: {output_path}")
-                    else:
-                        print("No faces detected")
-                    
-                    last_capture_time = current_time
-                time.sleep(0.01)
-                
-                
-        except KeyboardInterrupt:
-            print("\nInterrupted")
-        finally:
-            cap.release()
+                                    print(" -> Cancelled. Resuming detection...")
+                                    time.sleep(1) # Small pause to avoid immediate re-trigger
 
-    def run_burst_capture(self, camera_index=0, num_frames=10):
-        cap = cv2.VideoCapture(camera_index)
-        if not cap.isOpened():
-            print("Error: Cannot open camera")
-            return
+                            else:
+                                cv2.putText(frame, "Unknown", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        except Exception as e:
+                            print(f"Error: {e}")
 
-        print("\n" + "="*60)
-        print(f"Burst Capture Started (Saving {num_frames} frames)")
-        print("="*60)
-        
-        count = 0
-        try:
-            while count < num_frames:
-                ret, frame = cap.read()
-                if not ret: break
-                
-                count += 1
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                output_path = Path(self.output_dir) / f"burst_{timestamp}.jpg"
-                cv2.imwrite(str(output_path), frame)
-                print(f"[{count}/{num_frames}] Saved: {output_path}")
-                time.sleep(0.1)
-                
+                # Spin ROS node briefly
+                rclpy.spin_once(self.node, timeout_sec=0.01)
+
         except KeyboardInterrupt:
             print("\nInterrupted")
         finally:
             cap.release()
 
 def main():
-    print("\n" + "="*60)
-    print("YOLO + FaceNet Recognition System (Full NPU Version)")
-    print("="*60)
-    
-    try:
-        system = YOLOFaceRecognitionSystemNPU()
-        
-        while True:
-            print("\nOptions:")
-            print("1. Burst Capture (Save only)")
-            print("2. Webcam Batch (Save + Recognize)")
-            print("3. Exit")
-            
-            choice = input("\nSelect option (1-3): ").strip()
-            
-            if choice == '1':
-                camera_index = find_available_camera()
-                if camera_index is None:
-                    print("Error: No cameras found!")
-                    continue
-                system.run_burst_capture(camera_index=camera_index, num_frames=10)
-                
-            elif choice == '2':
-                camera_index = find_available_camera()
-                if camera_index is None:
-                    print("Error: No cameras found!")
-                    continue
-                    
-                duration = input("Enter duration in seconds (default 10): ").strip()
-                duration = int(duration) if duration else 10
-                
-                interval = input("Enter capture interval in seconds (default 2): ").strip()
-                interval = float(interval) if interval else 2.0
-                
-                system.run_webcam_batch(camera_index=camera_index, duration_seconds=duration, capture_interval=interval)
-                
-            elif choice == '3':
-                print("Exiting...")
-                break
-            else:
-                print("Invalid option")
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Initialize ROS 2
+    rclpy.init()
+
+    # Create Node
+    node = FaceRecognitionNode()
+
+    # Initialize System
+    system = YOLOFaceRecognitionSystemROS2NPU(node=node)
+
+    # Auto-detect camera
+    camera_index = find_available_camera()
+    if camera_index is None:
+        print("Error: No cameras found!")
+        return
+
+    # Run Recognition
+    system.run_ros2_recognition(camera_index=camera_index)
+
+    # Cleanup
+    node.destroy_node()
+    rclpy.shutdown()
 
 if __name__ == "__main__":
     main()
