@@ -41,7 +41,7 @@ class NPUYoloDetector:
     """
     YOLO Face Detector using NPU (maccel)
     """
-    def __init__(self, model_path, input_size=(512, 640), conf_thres=0.15, iou_thres=0.5):
+    def __init__(self, model_path, input_size=(512, 640), conf_thres=0.45, iou_thres=0.5):
         print(f"Loading YOLO model from NPU: {model_path}")
         self.acc = maccel.Accelerator()
         self.model = maccel.Model(model_path)
@@ -103,15 +103,29 @@ class NPUYoloDetector:
         num_anchors = box_output.shape[0]
         boxes = []
         scores = []
-        inverse_conf = -np.log(1 / self.conf_thres - 1)
+        
+        # Check if output is already sigmoid-activated (probabilities)
+        # If all values are between 0 and 1, assume probabilities.
+        is_probability = np.all((class_output >= 0) & (class_output <= 1))
+        
+        if is_probability:
+            # Values are already probabilities
+            # Filter directly
+            mask = class_output[:, 0] > self.conf_thres
+            indices = np.where(mask)[0]
+        else:
+            # Values are logits
+            inverse_conf = -np.log(1 / self.conf_thres - 1)
+            mask = class_output[:, 0] > inverse_conf
+            indices = np.where(mask)[0]
 
-        for i in range(num_anchors):
-            # Class score is now in a separate tensor (index 0)
+        for i in indices:
             class_score = class_output[i, 0]
             
-            if class_score < inverse_conf:
-                continue
-            conf = 1 / (1 + np.exp(-class_score))
+            if is_probability:
+                conf = class_score
+            else:
+                conf = 1 / (1 + np.exp(-class_score))
             
             # Decode box (DFL)
             box = []
@@ -459,6 +473,12 @@ class YOLOFaceRecognitionSystemNPU:
                             
                             try:
                                 face = frame_rgb[y1:y2, x1:x2]
+                                
+                                # Check if face image is valid (not empty)
+                                if face.size == 0:
+                                    print(f"  Face {idx + 1}: Invalid face crop ({x1}, {y1}, {x2}, {y2})")
+                                    continue
+                                    
                                 result = self.recognize_face(face)
                                 if result:
                                     name = result['name']
