@@ -322,6 +322,12 @@ class NPUFaceRecognizer:
         # Output shape from debug: (1, 1, 512)
         # We need a flat 512 vector
         embedding = outputs[0].flatten()
+        
+        # L2 Normalize
+        norm = np.linalg.norm(embedding)
+        if norm > 0:
+            embedding = embedding / norm
+            
         return embedding
 
 class YOLOFaceRecognitionSystemNPU:
@@ -432,6 +438,12 @@ class YOLOFaceRecognitionSystemNPU:
             result['distance'] = float(min_distance)
             result['confidence'] = max(0, (1 - min_distance / self.threshold) * 100)
             return result
+        else:
+            if best_match:
+                print(f"  [Debug] Best match: {best_match} (Dist: {min_distance:.4f} > Threshold: {self.threshold})")
+            else:
+                print(f"  [Debug] No match found (Dist: {min_distance})")
+                
         return None
 
     def run_webcam_batch(self, camera_index=0, duration_seconds=10, capture_interval=2):
