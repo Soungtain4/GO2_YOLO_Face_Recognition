@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 import time
+import os
 
 try:
     import maccel
@@ -9,10 +10,19 @@ except ImportError:
     exit(1)
 
 def main():
-    model_path = "../regulus-npu-demo/face-detection-yolov8n/face_yolov8n_640_512.mxq"
-    input_size = (512, 640) # H, W
+    # Load custom model
+    model_path = "yolov8n-face.mxq"
     
     print(f"Loading model: {model_path}")
+    if not os.path.exists(model_path):
+        print(f"Error: Model file not found at {model_path}")
+        # Fallback to check parent dir if not found
+        if os.path.exists("../" + model_path):
+            model_path = "../" + model_path
+            print(f"Found at: {model_path}")
+        else:
+            return
+
     try:
         acc = maccel.Accelerator()
         model = maccel.Model(model_path)
@@ -34,21 +44,11 @@ def main():
     except:
         pass
 
-    # Create dummy input base (H, W, 3)
-    dummy_base = np.zeros((input_size[0], input_size[1], 3), dtype=np.uint8)
-    padded = np.full((input_size[0], input_size[1], 3), 114, dtype=np.uint8)
-    padded[:input_size[0], :input_size[1]] = dummy_base
-    
-    # Normalize
-    normalized = padded.astype(np.float32) / 255.0
-    
     # Test shapes and types
-    # Possible resolutions: (512, 640) or (640, 512)
-    # Possible types: float32 or uint8
-    
     resolutions = [
-        ("512x640", (512, 640)),
-        ("640x512", (640, 512))
+        ("640x640", (640, 640)),
+        ("640x512", (640, 512)),
+        ("512x640", (512, 640))
     ]
     
     for res_name, (h, w) in resolutions:
@@ -94,6 +94,8 @@ def main():
                         print(f"    First 10 values: {flat[:10]}")
                 else:
                     print(f"Output shape: {outputs.shape}")
+                    flat = outputs.flatten()
+                    print(f"    First 10 values: {flat[:10]}")
                 print("="*40)
                 
                 # If successful, we can stop
