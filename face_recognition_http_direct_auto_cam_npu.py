@@ -352,7 +352,7 @@ class YOLOFaceRecognitionSystemHTTP:
                  facenet_path = "../" + facenet_path
                  print(f"Found FaceNet model in parent directory: {facenet_path}")
 
-        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(512, 640))
+        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 640))
         self.face_recognizer = NPUFaceRecognizer(model_path=facenet_path)
 
         self.visitors_info = self._load_visitors_info()
