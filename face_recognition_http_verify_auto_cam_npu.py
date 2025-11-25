@@ -42,7 +42,7 @@ class NPUYoloDetector:
     """
     YOLO Face Detector using NPU (maccel)
     """
-    def __init__(self, model_path, input_size=(640, 512), conf_thres=0.45, iou_thres=0.5):
+    def __init__(self, model_path, input_size=(512, 640), conf_thres=0.45, iou_thres=0.5):
         print(f"Loading YOLO model from NPU: {model_path}")
         self.acc = maccel.Accelerator()
         self.model = maccel.Model(model_path)
@@ -352,7 +352,7 @@ class YOLOFaceRecognitionSystemHTTPVerify:
                  facenet_path = "../" + facenet_path
                  print(f"Found FaceNet model in parent directory: {facenet_path}")
 
-        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(640, 512))
+        self.yolo_detector = NPUYoloDetector(model_path=yolo_path, input_size=(512, 640))
         self.face_recognizer = NPUFaceRecognizer(model_path=facenet_path)
 
         self.visitors_info = self._load_visitors_info()
